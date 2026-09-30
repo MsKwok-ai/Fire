@@ -1,0 +1,802 @@
+<!DOCTYPE html>
+<html lang="zh-HK">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>火場求生記：大廈逃生大冒險</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;600;700;900&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Noto Sans TC', sans-serif;
+            touch-action: manipulation;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+        .bounce-anim {
+            animation: bounce 2s infinite;
+        }
+        @keyframes bounce {
+            0%, 100% { transform: translateY(0); }
+            50% { transform: translateY(-8px); }
+        }
+        .smoke-overlay {
+            background: radial-gradient(circle, rgba(100,100,100,0.4) 0%, rgba(30,30,30,0.85) 100%);
+        }
+    </style>
+</head>
+<body class="bg-slate-900 text-slate-100 min-h-screen flex flex-col justify-between select-none">
+
+    <!-- 頂部狀態列 -->
+    <header class="bg-slate-800 border-b border-slate-700 px-4 py-3 sticky top-0 z-50">
+        <div class="max-w-4xl mx-auto flex items-center justify-between">
+            <div class="flex items-center space-x-2">
+                <span class="text-2xl animate-pulse">🚨</span>
+                <div>
+                    <h1 class="text-lg font-bold text-amber-400 leading-tight">火場求生記</h1>
+                    <p class="text-xs text-slate-400">大廈逃生實境大冒險</p>
+                </div>
+            </div>
+            
+            <div class="flex items-center space-x-4 text-sm font-semibold">
+                <div class="bg-slate-700 px-3 py-1.5 rounded-full flex items-center space-x-1 border border-slate-600">
+                    <span>🏆 得分:</span>
+                    <span id="score-display" class="text-amber-400 text-base font-extrabold">0</span>
+                </div>
+                <div class="bg-slate-700 px-3 py-1.5 rounded-full flex items-center space-x-1 border border-slate-600">
+                    <span>❤️ 生存值:</span>
+                    <span id="health-display" class="text-emerald-400 text-base font-extrabold">100%</span>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <!-- 主遊戲容器 -->
+    <main class="flex-grow flex items-center justify-center p-4">
+        <div id="game-container" class="w-full max-w-3xl bg-slate-800 border border-slate-700 rounded-3xl shadow-2xl overflow-hidden min-h-[520px] flex flex-col justify-between relative">
+            <!-- 內容區塊由 JavaScript 動態渲染 -->
+        </div>
+    </main>
+
+    <!-- 即時解說與重試反饋彈窗 Modal -->
+    <div id="feedback-modal" class="hidden fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+        <div class="bg-slate-800 border border-slate-600 rounded-3xl p-6 max-w-md w-full shadow-2xl text-center space-y-4 transform transition-all scale-100">
+            <div id="modal-icon" class="text-6xl">💡</div>
+            <h3 id="modal-title" class="text-2xl font-black text-amber-400"></h3>
+            <div id="modal-desc" class="text-slate-200 text-sm leading-relaxed text-left bg-slate-900/60 p-4 rounded-2xl border border-slate-700"></div>
+            <button id="modal-btn" onclick="closeFeedbackModal()" class="w-full py-3.5 bg-amber-500 hover:bg-amber-600 text-slate-950 font-black rounded-2xl text-lg transition active:scale-95">
+                繼續
+            </button>
+        </div>
+    </div>
+
+    <footer class="bg-slate-900 text-center py-2 text-xs text-slate-500 border-t border-slate-800">
+        防災教育互動遊戲 ｜ 適用於 iPad 及觸控平板裝置 ｜ 繁體中文版
+    </footer>
+
+    <script>
+        // Web Audio 音效產生器，無需外接音訊檔
+        const AudioEngine = {
+            ctx: null,
+            init() {
+                if (!this.ctx) {
+                    this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+                }
+            },
+            playBeep(freq = 440, type = 'sine', duration = 0.15) {
+                this.init();
+                try {
+                    const osc = this.ctx.createOscillator();
+                    const gain = this.ctx.createGain();
+                    osc.type = type;
+                    osc.frequency.value = freq;
+                    gain.gain.setValueAtTime(0.1, this.ctx.currentTime);
+                    gain.gain.exponentialRampToValueAtTime(0.01, this.ctx.currentTime + duration);
+                    osc.connect(gain);
+                    gain.connect(this.ctx.destination);
+                    osc.start();
+                    osc.stop(this.ctx.currentTime + duration);
+                } catch(e){}
+            },
+            playSuccess() {
+                this.playBeep(523, 'triangle', 0.1);
+                setTimeout(() => this.playBeep(659, 'triangle', 0.1), 100);
+                setTimeout(() => this.playBeep(783, 'triangle', 0.25), 200);
+            },
+            playError() {
+                this.playBeep(220, 'sawtooth', 0.2);
+                setTimeout(() => this.playBeep(180, 'sawtooth', 0.3), 150);
+            }
+        };
+
+        // 陣列洗牌函數 (隨機打亂選項順序)
+        function shuffleArray(array) {
+            const arr = [...array];
+            for (let i = arr.length - 1; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                [arr[i], arr[j]] = [arr[j], arr[i]];
+            }
+            return arr;
+        }
+
+        // 全局遊戲狀態
+        const gameState = {
+            score: 0,
+            health: 100,
+            currentStep: 'intro',
+            inventory: [],
+            dialedNumber: "",
+            pendingNextStep: null,
+            isCurrentSuccess: false
+        };
+
+        const container = document.getElementById('game-container');
+
+        function showFeedback(title, description, icon = '💡', isSuccess = true, nextStep = null) {
+            gameState.isCurrentSuccess = isSuccess;
+            if (isSuccess) {
+                AudioEngine.playSuccess();
+            } else {
+                AudioEngine.playError();
+            }
+            
+            document.getElementById('modal-icon').innerText = icon;
+            document.getElementById('modal-title').innerText = title;
+            document.getElementById('modal-desc').innerHTML = description;
+            
+            const btn = document.getElementById('modal-btn');
+            if (isSuccess) {
+                btn.innerText = "明白，繼續下一題 ➔";
+                btn.className = "w-full py-3.5 bg-amber-500 hover:bg-amber-600 text-slate-950 font-black rounded-2xl text-lg transition active:scale-95";
+                gameState.pendingNextStep = nextStep;
+            } else {
+                btn.innerText = "重新嘗試本題 🔄";
+                btn.className = "w-full py-3.5 bg-rose-500 hover:bg-rose-600 text-white font-black rounded-2xl text-lg transition active:scale-95";
+                // 答錯時，留在當前關卡重新嘗試
+                gameState.pendingNextStep = gameState.currentStep;
+            }
+            
+            const modal = document.getElementById('feedback-modal');
+            modal.classList.remove('hidden');
+        }
+
+        function closeFeedbackModal() {
+            document.getElementById('feedback-modal').classList.add('hidden');
+            if (gameState.pendingNextStep) {
+                gameState.currentStep = gameState.pendingNextStep;
+                gameState.pendingNextStep = null;
+                renderScene();
+            }
+        }
+
+        function updateHeader() {
+            document.getElementById('score-display').innerText = gameState.score;
+            const healthEl = document.getElementById('health-display');
+            healthEl.innerText = `${gameState.health}%`;
+            if (gameState.health < 40) {
+                healthEl.className = 'text-rose-500 text-base font-extrabold animate-pulse';
+            } else if (gameState.health < 70) {
+                healthEl.className = 'text-amber-400 text-base font-extrabold';
+            } else {
+                healthEl.className = 'text-emerald-400 text-base font-extrabold';
+            }
+        }
+
+        function renderScene() {
+            updateHeader();
+            if (gameState.health <= 0) {
+                renderGameOver();
+                return;
+            }
+            switch (gameState.currentStep) {
+                case 'intro':
+                    renderIntro();
+                    break;
+                // 第一關：警報 (行動 + 原因)
+                case 's1_alarm_action':
+                    renderQuestionChoice({
+                        badge: '第一關：警報響起',
+                        stepNum: '1 / 18',
+                        question: '當大廈火警警報響起時，你首先應該採取什麼【行動】？',
+                        options: [
+                            { text: 'A. 視乎情況（先觸摸門把與察看走廊是否有濃煙）', correct: true, points: 15, feedbackTitle: '✅ 行動正確！', feedbackText: '<b>答對了！</b><br>第一步永遠是先評估環境，摸門把與察看走廊有無濃煙。', nextStep: 's1_alarm_reason' },
+                            { text: 'B. 直接留在家中', correct: false, points: -10, feedbackTitle: '❌ 行動不正確！', feedbackText: '<b>原因解析：</b>不能盲目留守，如果走廊安全或火源在自己家中，應盡快離家逃生。' },
+                            { text: 'C. 直接離家逃生', correct: false, points: -10, feedbackTitle: '❌ 行動不正確！', feedbackText: '<b>原因解析：</b>不能盲目衝出門外，因為走廊可能已經充滿劇毒濃煙。' }
+                        ]
+                    });
+                    break;
+                case 's1_alarm_reason':
+                    renderQuestionChoice({
+                        badge: '第一關：警報響起',
+                        stepNum: '2 / 18',
+                        question: '承上題，為什麼逃生或留守必須【視乎情況】（先摸門把與察看走廊）？',
+                        options: [
+                            { text: 'A. 因為走廊若充滿濃煙或門把燙手，強行逃生會吸入毒煙致昏迷，應留在室內；若安全則應離家。', correct: true, points: 15, feedbackTitle: '✅ 原因正確！', feedbackText: '<b>香港消防處 Stay or Flee 策略：</b><br>逃生或留守取決於走廊是否有濃煙與門把溫度。', nextStep: 's1_pack' },
+                            { text: 'B. 因為要先確定警報是不是鄰居玩火開玩笑。', correct: false, points: -10, feedbackTitle: '❌ 原因不正確！', feedbackText: '<b>解析：</b>警報響起時必須當作真實火警處理，不能抱持僥倖心理！' }
+                        ]
+                    });
+                    break;
+
+                // 第一關：裝備收集與配對
+                case 's1_pack':
+                    renderStage1Pack();
+                    break;
+                case 's1_pack_reason':
+                    renderStage1Matching();
+                    break;
+
+                // 第二關：離家開門 (行動 + 原因)
+                case 's2_door_action':
+                    renderQuestionChoice({
+                        badge: '第二關：離開家門',
+                        stepNum: '5 / 18',
+                        question: '評估後決定離家逃生，當你打開門走出家門後，大門應該如何【處理】？',
+                        options: [
+                            { text: 'A. 隨手關上大門', correct: true, points: 10, feedbackTitle: '✅ 行動正確！', feedbackText: '<b>答對了！</b>離開住所時務必隨手關門。', nextStep: 's2_door_reason' },
+                            { text: 'B. 將大門大開', correct: false, points: -10, feedbackTitle: '❌ 行動不正確！', feedbackText: '<b>致命危險：</b>門大開會讓走廊的濃煙與火勢迅速蔓延進你的家！' }
+                        ]
+                    });
+                    break;
+                case 's2_door_reason':
+                    renderQuestionChoice({
+                        badge: '第二關：離開家門',
+                        stepNum: '6 / 18',
+                        question: '為什麼離開家門時一定要【隨手關上大門】？',
+                        options: [
+                            { text: 'A. 阻止火勢與有毒濃煙蔓延波及你的住所，保護住宅並為救援爭取時間。', correct: true, points: 10, feedbackTitle: '✅ 原因正確！', feedbackText: '<b>防災重點：</b>隨手關門能形成阻火阻煙屏障。', nextStep: 's2_smoke_action' },
+                            { text: 'B. 防止家裡的貴重物品被路過的鄰居偷走。', correct: false, points: -10, feedbackTitle: '❌ 原因不正確！', feedbackText: '<b>解析：</b>關門的主要防災目的是阻止火勢與濃煙蔓延，而非防盜！' }
+                        ]
+                    });
+                    break;
+
+                // 第二關：走廊濃煙 (行動 + 原因)
+                case 's2_smoke_action':
+                    renderQuestionChoice({
+                        badge: '第二關：走廊濃煙',
+                        stepNum: '7 / 18',
+                        question: '來到走廊發現開始飄來濃煙！你應該採用什麼【姿勢】逃生？',
+                        options: [
+                            { text: 'A. 伏地爬行', correct: true, points: 10, feedbackTitle: '✅ 行動正確！', feedbackText: '<b>答對了！</b>遇到濃煙時應立即採取伏地姿勢。', nextStep: 's2_smoke_reason' },
+                            { text: 'B. 站立快速奔跑', correct: false, points: -10, feedbackTitle: '❌ 行動不正確！', feedbackText: '<b>致命危險：</b>熱濃煙向上聚集，直立奔跑會吸入高熱毒氣！' }
+                        ]
+                    });
+                    break;
+                case 's2_smoke_reason':
+                    renderQuestionChoice({
+                        badge: '第二關：走廊濃煙',
+                        stepNum: '8 / 18',
+                        question: '為什麼在濃煙中逃生必須採用【伏地爬行】姿勢？',
+                        options: [
+                            { text: 'A. 因為熱濃煙會向上積聚，離地面約 30 至 60 cm 的層區空氣較清新、溫度較低。', correct: true, points: 10, feedbackTitle: '✅ 原因正確！', feedbackText: '<b>科學原理：</b>地面層空氣有毒氣體濃度最低、視線最清晰。', nextStep: 's2_elevator_action' },
+                            { text: 'B. 因為伏地爬行能防止被天花板掉落的物品砸中頭部。', correct: false, points: -10, feedbackTitle: '❌ 原因不正確！', feedbackText: '<b>解析：</b>主要原因是因為離地面空氣較清新且溫度較低！' }
+                        ]
+                    });
+                    break;
+
+                // 第二關：逃生通道 (行動 + 原因)
+                case 's2_elevator_action':
+                    renderQuestionChoice({
+                        badge: '第二關：逃生通道',
+                        stepNum: '9 / 18',
+                        question: '到達通道口，面對升降機（電梯）與樓梯，你應該【選擇哪種通道】？',
+                        options: [
+                            { text: 'A. 利用最近的後備樓梯逃生', correct: true, points: 10, feedbackTitle: '✅ 行動正確！', feedbackText: '<b>答對了！</b>火警時絕對必須走樓梯。', nextStep: 's2_elevator_reason' },
+                            { text: 'B. 搭乘升降機迅速下樓', correct: false, points: -10, feedbackTitle: '❌ 行動不正確！', feedbackText: '<b>致命危險：</b>絕對不能搭乘升降機！' }
+                        ]
+                    });
+                    break;
+                case 's2_elevator_reason':
+                    renderQuestionChoice({
+                        badge: '第二關：逃生通道',
+                        stepNum: '10 / 18',
+                        question: '為什麼火警發生時【絕對不可以搭乘升降機】？',
+                        options: [
+                            { text: 'A. 因為火警時供電隨時會中斷，導致升降機停電困於機廂內，受濃煙威脅窒息。', correct: true, points: 10, feedbackTitle: '✅ 原因正確！', feedbackText: '<b>關鍵知識：</b>升降機井會像煙囪一樣快速充斥濃煙，停電更會讓人受困！', nextStep: 's2_stairs_action' },
+                            { text: 'B. 因為走樓梯可以鍛鍊身體體能。', correct: false, points: -10, feedbackTitle: '❌ 原因不正確！', feedbackText: '<b>解析：</b>不搭升降機是為了防止因停電受困於機廂內！' }
+                        ]
+                    });
+                    break;
+
+                // 第二關：樓梯有煙 (行動 + 原因)
+                case 's2_stairs_action':
+                    renderQuestionChoice({
+                        badge: '第二關：樓梯有煙',
+                        stepNum: '11 / 18',
+                        question: '走到樓梯口時，發現梯間充滿濃煙！你應該採取什麼【行動】？',
+                        options: [
+                            { text: 'A. 切勿強衝！改用另一條無煙樓梯，或折返住所留守。', correct: true, points: 10, feedbackTitle: '✅ 行動正確！', feedbackText: '<b>答對了！</b>梯間有煙時絕不能硬衝。', nextStep: 's2_stairs_reason' },
+                            { text: 'B. 閉住呼吸，快速向下強衝過去。', correct: false, points: -10, feedbackTitle: '❌ 行動不正確！', feedbackText: '<b>致命危險：</b>濃煙極毒高熱，硬衝極易在半路窒息昏迷！' }
+                        ]
+                    });
+                    break;
+                case 's2_stairs_reason':
+                    renderQuestionChoice({
+                        badge: '第二關：樓梯有煙',
+                        stepNum: '12 / 18',
+                        question: '為什麼看到梯間充滿濃煙時【絕對不能強衝】？',
+                        options: [
+                            { text: 'A. 因為濃煙含有劇毒氣體（如一氧化碳）與高熱，只需吸入數口就會令人昏迷死亡。', correct: true, points: 10, feedbackTitle: '✅ 原因正確！', feedbackText: '<b>防災金律：</b>濃煙是火場第一殺手，切勿嘗試衝過濃煙區！', nextStep: 'stage3_trapped_intro' },
+                            { text: 'B. 因為樓梯太暗容易扭傷腳踝。', correct: false, points: -10, feedbackTitle: '❌ 原因不正確！', feedbackText: '<b>解析：</b>主要危險是劇毒濃煙與高熱會在幾秒內致人昏迷！' }
+                        ]
+                    });
+                    break;
+
+                // 第三關：留守應變特訓
+                case 'stage3_trapped_intro':
+                    renderStage3TrappedIntro();
+                    break;
+
+                // 留守步驟 1：封門縫 (行動 + 原因)
+                case 's3_seal_action':
+                    renderQuestionChoice({
+                        badge: '留守應變：步驟 1',
+                        stepNum: '13 / 18',
+                        question: '被迫折返留守家中時，第一步對大門應該採取什麼【行動】？',
+                        options: [
+                            { text: 'A. 關上大門，並用濕毛巾或膠紙封密門縫隙', correct: true, points: 10, feedbackTitle: '✅ 行動正確！', feedbackText: '<b>答對了！</b>密封門縫是留守第一防線。', nextStep: 's3_seal_reason' },
+                            { text: 'B. 將大門打開以維持空氣對流', correct: false, points: -10, feedbackTitle: '❌ 行動不正確！', feedbackText: '<b>致命危險：</b>開門會讓外面的有毒濃煙迅速灌滿房間！' }
+                        ]
+                    });
+                    break;
+                case 's3_seal_reason':
+                    renderQuestionChoice({
+                        badge: '留守應變：步驟 1',
+                        stepNum: '14 / 18',
+                        question: '為什麼留守時必須【用濕毛巾或膠紙封密門縫】？',
+                        options: [
+                            { text: 'A. 阻止走廊外面的有毒濃煙與高熱氣體滲入室內。', correct: true, points: 10, feedbackTitle: '✅ 原因正確！', feedbackText: '<b>原理：</b>濕毛巾填補隙縫能有效阻隔有毒煙氣。', nextStep: 's3_room_action' },
+                            { text: 'B. 防止房間外的噪音影響睡眠。', correct: false, points: -10, feedbackTitle: '❌ 原因不正確！', feedbackText: '<b>解析：</b>密封門縫目的是阻隔有毒濃煙滲入！' }
+                        ]
+                    });
+                    break;
+
+                // 留守步驟 2：安全房間 (行動 + 原因)
+                case 's3_room_action':
+                    renderQuestionChoice({
+                        badge: '留守應變：步驟 2',
+                        stepNum: '15 / 18',
+                        question: '封好門縫後，你應該移動到家中的【哪個位置】躲避？',
+                        options: [
+                            { text: 'A. 移動到有窗戶且未受濃煙影響的房間', correct: true, points: 10, feedbackTitle: '✅ 行動正確！', feedbackText: '<b>答對了！</b>選擇有窗戶的安全房間。', nextStep: 's3_room_reason' },
+                            { text: 'B. 躲在無窗戶的浴室或衣櫃內', correct: false, points: -10, feedbackTitle: '❌ 行動不正確！', feedbackText: '<b>致命危險：</b>無窗密閉空間會缺乏氧氣，且救援人員極難發現你！' }
+                        ]
+                    });
+                    break;
+                case 's3_room_reason':
+                    renderQuestionChoice({
+                        badge: '留守應變：步驟 2',
+                        stepNum: '16 / 18',
+                        question: '為什麼留守時必須選擇【有窗戶的房間】？',
+                        options: [
+                            { text: 'A. 能確保有新鮮空氣呼吸，並便於向外向地面消防員呼救。', correct: true, points: 10, feedbackTitle: '✅ 原因正確！', feedbackText: '<b>關鍵：</b>窗戶能提供新鮮空氣並作為求救窗口。', nextStep: 'stage3_call999' },
+                            { text: 'B. 窗戶旁邊視野好可以觀看街景。', correct: false, points: -10, feedbackTitle: '❌ 原因不正確！', feedbackText: '<b>解析：</b>窗戶是用來取得新鮮空氣與向外發出求救訊號的！' }
+                        ]
+                    });
+                    break;
+
+                // 留守步驟 3：撥打 999 互動
+                case 'stage3_call999':
+                    renderStage3Call999();
+                    break;
+
+                // 留守步驟 4：發出訊號 (行動 + 原因)
+                case 's3_signal_action':
+                    renderQuestionChoice({
+                        badge: '留守應變：步驟 4',
+                        stepNum: '17 / 18',
+                        question: '在窗邊求救時，你應該採取什麼【行動】？',
+                        options: [
+                            { text: 'A. 在窗邊揮動顯眼物品（如濕毛巾或淺色被單）', correct: true, points: 10, feedbackTitle: '✅ 行動正確！', feedbackText: '<b>答對了！</b>揮動顯眼物品發出訊號。', nextStep: 's3_signal_reason' },
+                            { text: 'B. 靜靜坐在房間中央等待', correct: false, points: -10, feedbackTitle: '❌ 行動不正確！', feedbackText: '<b>解析：</b>坐在房間中央，地面的消防隊員很難發現你的位置！' }
+                        ]
+                    });
+                    break;
+                case 's3_signal_reason':
+                    renderQuestionChoice({
+                        badge: '留守應變：步驟 4',
+                        stepNum: '18 / 18',
+                        question: '為什麼在窗邊要【揮動毛巾或被單】？',
+                        options: [
+                            { text: 'A. 向地面上的消防救援人員發出顯眼求救訊號，精確定位你的受困位置。', correct: true, points: 10, feedbackTitle: '✅ 原因正確！', feedbackText: '<b>救命關鍵：</b>顯眼標誌能幫助消防車高空雲梯車精準定位！', nextStep: 'victory' },
+                            { text: 'B. 用毛巾當作扇子把房間裡的熱氣吹走。', correct: false, points: -10, feedbackTitle: '❌ 原因不正確！', feedbackText: '<b>解析：</b>揮動毛巾是為了向地面消防員發出顯眼的視覺求救訊號！' }
+                        ]
+                    });
+                    break;
+
+                case 'victory':
+                    renderVictory();
+                    break;
+                case 'game_over':
+                    renderGameOver();
+                    break;
+            }
+        }
+
+        function renderIntro() {
+            container.innerHTML = `
+                <div class="p-8 text-center flex flex-col justify-between flex-grow">
+                    <div class="my-auto space-y-4">
+                        <div class="text-7xl mb-2 bounce-anim">🔥🏢🏃‍♂️</div>
+                        <h2 class="text-3xl font-extrabold text-amber-400">大廈火警逃生大冒險</h2>
+                        <p class="text-slate-300 max-w-md mx-auto leading-relaxed text-sm">
+                            大廈突發火警！你將面臨各種真實應變情境。<br>
+                            本遊戲將<b>【逃生行動】與【背後原因】拆解為獨立問題</b>，考驗你的真才實學！<br>
+                            答錯可立即重試，直到完全掌握防災知識！
+                        </p>
+                    </div>
+
+                    <button onclick="AudioEngine.init(); gameState.currentStep='s1_alarm_action'; renderScene();" class="w-full py-4 bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 text-slate-950 font-black rounded-2xl text-xl shadow-lg transition active:scale-95">
+                        開始挑戰 ➔
+                    </button>
+                </div>
+            `;
+        }
+
+        function renderQuestionChoice(config) {
+            // 洗牌打亂選項順序，防止正確答案永遠在第一個
+            const shuffledOptions = shuffleArray(config.options);
+
+            container.innerHTML = `
+                <div class="p-6 flex flex-col justify-between flex-grow">
+                    <div>
+                        <div class="flex items-center justify-between mb-4">
+                            <span class="text-xs font-bold bg-amber-500/20 text-amber-400 px-3 py-1 rounded-full border border-amber-500/30">${config.badge}</span>
+                            <span class="text-xs text-slate-400">進度 ${config.stepNum}</span>
+                        </div>
+                        <h3 class="text-lg font-bold text-white mb-6 leading-snug">
+                            ${config.question}
+                        </h3>
+                    </div>
+
+                    <div class="space-y-4 my-auto">
+                        ${shuffledOptions.map((opt) => `
+                            <button onclick="handleOptionClick(${opt.correct}, ${opt.points}, '${escapeQuotes(opt.feedbackTitle)}', '${escapeQuotes(opt.feedbackText)}', '${opt.nextStep || ''}')" 
+                                class="w-full py-4 bg-slate-700 hover:bg-slate-600 active:bg-slate-500 text-slate-100 border border-slate-600 font-medium rounded-2xl text-sm transition text-left px-5 shadow-md active:scale-98 leading-relaxed">
+                                ${opt.text}
+                            </button>
+                        `).join('')}
+                    </div>
+                </div>
+            `;
+        }
+
+        function escapeQuotes(str) {
+            return str.replace(/'/g, "\\'").replace(/"/g, '&quot;');
+        }
+
+        function handleOptionClick(isCorrect, points, title, text, nextStep) {
+            if (isCorrect) {
+                gameState.score += points;
+                showFeedback(title, text, '🌟', true, nextStep);
+            } else {
+                gameState.health += points; // points is negative
+                showFeedback(title, text, '⚠️', false, null);
+            }
+        }
+
+        function renderStage1Pack() {
+            const items = [
+                { id: 'phone', name: '手提電話', emoji: '📱' },
+                { id: 'key', name: '門匙', emoji: '🔑' },
+                { id: 'towel', name: '濕毛巾', emoji: '🧴' },
+                { id: 'game', name: '遊戲機', emoji: '🎮' },
+                { id: 'toy', name: '毛公仔', emoji: '🧸' },
+                { id: 'chips', name: '零食包', emoji: '🍿' }
+            ];
+
+            container.innerHTML = `
+                <div class="p-6 flex flex-col justify-between flex-grow">
+                    <div>
+                        <div class="flex items-center justify-between mb-3">
+                            <span class="text-xs font-bold bg-amber-500/20 text-amber-400 px-3 py-1 rounded-full border border-amber-500/30">第一關：收集裝備</span>
+                            <span class="text-xs text-slate-400">進度 3 / 18</span>
+                        </div>
+                        <h3 class="text-xl font-bold text-white mb-2">
+                            如果評估後決定離家逃生，應該帶備哪三樣「逃生三寶」？
+                        </h3>
+                        <p class="text-sm text-slate-400 mb-4">請點選 3 樣正確的必備物品：</p>
+
+                        <div class="grid grid-cols-3 gap-3 mb-4">
+                            ${items.map(item => `
+                                <button onclick="toggleItem('${item.id}')" 
+                                    id="item-${item.id}"
+                                    class="p-4 bg-slate-700/60 border border-slate-600 hover:border-amber-400 rounded-2xl flex flex-col items-center justify-center transition active:scale-95 ${gameState.inventory.includes(item.id) ? 'ring-4 ring-amber-400 bg-amber-500/20' : ''}">
+                                    <span class="text-4xl mb-1">${item.emoji}</span>
+                                    <span class="text-sm font-bold text-slate-200">${item.name}</span>
+                                </button>
+                            `).join('')}
+                        </div>
+                    </div>
+
+                    <div class="bg-slate-900/60 p-3 rounded-xl border border-slate-700 flex items-center justify-between">
+                        <div class="text-sm text-slate-300">
+                            已選取的逃生三寶：<span id="pack-count" class="text-amber-400 font-bold">${gameState.inventory.length}</span> / 3
+                        </div>
+                        <button onclick="submitPack()" class="py-2.5 px-6 bg-amber-500 hover:bg-amber-600 text-slate-950 font-black rounded-xl text-sm transition">
+                            確認打包 🎒
+                        </button>
+                    </div>
+                </div>
+            `;
+        }
+
+        function toggleItem(id) {
+            AudioEngine.playBeep(400, 'sine', 0.08);
+            const idx = gameState.inventory.indexOf(id);
+            if (idx > -1) {
+                gameState.inventory.splice(idx, 1);
+            } else {
+                if (gameState.inventory.length >= 3) {
+                    showFeedback('提醒', '你最多只能選擇 3 樣物品！', '⚠️', false);
+                    return;
+                }
+                gameState.inventory.push(id);
+            }
+            renderStage1Pack();
+        }
+
+        function submitPack() {
+            const correctSet = ['phone', 'key', 'towel'];
+            const isAllCorrect = gameState.inventory.length === 3 && gameState.inventory.every(item => correctSet.includes(item));
+
+            if (isAllCorrect) {
+                gameState.score += 15;
+                showFeedback(
+                    '✅ 逃生三寶收集完成！',
+                    '<b>逃生三寶組合：</b><br>• 📱 <b>手提電話</b><br>• 🔑 <b>門匙</b><br>• 🧴 <b>濕毛巾</b><br><br>攜帶這三樣物品能大大提高逃生成功率！',
+                    '🎒',
+                    true,
+                    's1_pack_reason'
+                );
+            } else {
+                gameState.health -= 10;
+                showFeedback(
+                    '❌ 物品選擇有誤！',
+                    '<b>提示：</b>逃生三寶應該包含「手提電話」、「門匙」和「濕毛巾」。遊戲機與零食會在緊急時刻耽誤逃生時間！',
+                    '⚠️',
+                    false
+                );
+                gameState.inventory = [];
+            }
+        }
+
+        function renderStage1Matching() {
+            container.innerHTML = `
+                <div class="p-6 flex flex-col justify-between flex-grow">
+                    <div>
+                        <div class="flex items-center justify-between mb-3">
+                            <span class="text-xs font-bold bg-amber-500/20 text-amber-400 px-3 py-1 rounded-full border border-amber-500/30">第一關：逃生三寶的作用</span>
+                            <span class="text-xs text-slate-400">進度 4 / 18</span>
+                        </div>
+                        <h3 class="text-lg font-bold text-white mb-2">
+                            請為逃生三寶選出對應的正確使用【原因】：
+                        </h3>
+
+                        <div class="space-y-3 my-2">
+                            <!-- 手提電話 -->
+                            <div class="bg-slate-700/50 p-3 rounded-2xl border border-slate-600 flex flex-col md:flex-row items-center justify-between gap-2">
+                                <div class="flex items-center space-x-2">
+                                    <span class="text-2xl">📱</span>
+                                    <span class="font-bold text-white text-sm">手提電話：</span>
+                                </div>
+                                <select id="reason-phone" class="bg-slate-800 text-slate-100 text-xs p-2.5 rounded-xl border border-slate-600 w-full md:w-auto">
+                                    <option value="">-- 請選擇原因 --</option>
+                                    <option value="call">通知消防員你的所在位置與報案</option>
+                                    <option value="smoke">掩住口鼻，過濾毒煙與高熱</option>
+                                    <option value="back">若走廊受阻，可用來開門折返住所躲避</option>
+                                </select>
+                            </div>
+
+                            <!-- 門匙 -->
+                            <div class="bg-slate-700/50 p-3 rounded-2xl border border-slate-600 flex flex-col md:flex-row items-center justify-between gap-2">
+                                <div class="flex items-center space-x-2">
+                                    <span class="text-2xl">🔑</span>
+                                    <span class="font-bold text-white text-sm">門匙：</span>
+                                </div>
+                                <select id="reason-key" class="bg-slate-800 text-slate-100 text-xs p-2.5 rounded-xl border border-slate-600 w-full md:w-auto">
+                                    <option value="">-- 請選擇原因 --</option>
+                                    <option value="call">通知消防員你的所在位置與報案</option>
+                                    <option value="smoke">掩住口鼻，過濾毒煙與高熱</option>
+                                    <option value="back">若走廊受阻，可用來開門折返住所躲避</option>
+                                </select>
+                            </div>
+
+                            <!-- 濕毛巾 -->
+                            <div class="bg-slate-700/50 p-3 rounded-2xl border border-slate-600 flex flex-col md:flex-row items-center justify-between gap-2">
+                                <div class="flex items-center space-x-2">
+                                    <span class="text-2xl">🧴</span>
+                                    <span class="font-bold text-white text-sm">濕毛巾：</span>
+                                </div>
+                                <select id="reason-towel" class="bg-slate-800 text-slate-100 text-xs p-2.5 rounded-xl border border-slate-600 w-full md:w-auto">
+                                    <option value="">-- 請選擇原因 --</option>
+                                    <option value="call">通知消防員你的所在位置與報案</option>
+                                    <option value="smoke">掩住口鼻，過濾毒煙與高熱</option>
+                                    <option value="back">若走廊受阻，可用來開門折返住所躲避</option>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+
+                    <button onclick="submitMatching()" class="w-full mt-2 py-3.5 bg-amber-500 hover:bg-amber-600 text-slate-950 font-black rounded-2xl text-base transition">
+                        確認答案 ➔
+                    </button>
+                </div>
+            `;
+        }
+
+        function submitMatching() {
+            const p = document.getElementById('reason-phone').value;
+            const k = document.getElementById('reason-key').value;
+            const t = document.getElementById('reason-towel').value;
+
+            if (p === 'call' && k === 'back' && t === 'smoke') {
+                gameState.score += 15;
+                showFeedback(
+                    '✅ 配對完全正確！',
+                    '• 📱 <b>手提電話：</b>向 999 報案並告知精確位置。<br>' +
+                    '• 🔑 <b>門匙：</b>萬一通道受阻，能順利解鎖折返家中。<br>' +
+                    '• 🧴 <b>濕毛巾：</b>掩住口鼻過濾高熱與有毒濃煙。',
+                    '🌟',
+                    true,
+                    's2_door_action'
+                );
+            } else {
+                gameState.health -= 10;
+                showFeedback(
+                    '❌ 原因配對有誤！',
+                    '<b>提示：</b><br>' +
+                    '• 手提電話是用來求救與報告位置的。<br>' +
+                    '• 門匙是用來在通道受阻時開門返回家中的。<br>' +
+                    '• 濕毛巾是用來捂住口鼻過濾濃煙的。',
+                    '⚠️',
+                    false
+                );
+            }
+        }
+
+        function renderStage3TrappedIntro() {
+            container.innerHTML = `
+                <div class="p-6 flex flex-col justify-between flex-grow text-center">
+                    <div class="my-auto space-y-4">
+                        <div class="text-6xl animate-bounce">🚨 🏠 🚨</div>
+                        <h3 class="text-2xl font-extrabold text-amber-400">進入終極挑戰：被迫留守應變</h3>
+                        <p class="text-slate-300 max-w-md mx-auto leading-relaxed text-sm">
+                            「如果所有走火通道都充滿濃煙無法逃生，被迫留在家中，你該怎樣應變？」<br>
+                            現在請進入安全防守模式，順序完成 4 大留守救命步驟！
+                        </p>
+                    </div>
+
+                    <button onclick="gameState.currentStep='s3_seal_action'; renderScene();" class="w-full py-4 bg-amber-500 hover:bg-amber-600 text-slate-950 font-black rounded-2xl text-lg transition">
+                        開始留守安全特訓 ➔
+                    </button>
+                </div>
+            `;
+        }
+
+        function renderStage3Call999() {
+            container.innerHTML = `
+                <div class="p-6 flex flex-col justify-between flex-grow">
+                    <div>
+                        <div class="flex items-center justify-between mb-2">
+                            <span class="text-xs font-bold bg-amber-500/20 text-amber-400 px-3 py-1 rounded-full border border-amber-500/30">留守應變：步驟 3</span>
+                            <span class="text-xs text-slate-400">進度 16 / 18</span>
+                        </div>
+                        <h3 class="text-lg font-bold text-white mb-1">
+                            請在電話撥號鍵盤打出香港緊急求救電話，報告位置！
+                        </h3>
+                        <p class="text-xs text-slate-400 mb-3">目的：讓消防員獲悉你具體的受困位置。</p>
+
+                        <!-- 電話鍵盤介面 -->
+                        <div class="bg-slate-900 max-w-xs mx-auto p-4 rounded-3xl border border-slate-700 shadow-inner">
+                            <div class="bg-slate-800 p-3 rounded-2xl text-center mb-3 border border-slate-700">
+                                <span id="dial-screen" class="text-2xl font-mono tracking-widest font-black text-emerald-400">
+                                    ${gameState.dialedNumber || "___"}
+                                </span>
+                            </div>
+
+                            <div class="grid grid-cols-3 gap-2 text-center">
+                                ${['1','2','3','4','5','6','7','8','9','C','0','📞'].map(key => `
+                                    <button onclick="pressDial('${key}')" class="py-3 bg-slate-800 hover:bg-slate-700 text-white font-bold rounded-xl text-lg border border-slate-700 active:scale-95 transition">
+                                        ${key}
+                                    </button>
+                                `).join('')}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        function pressDial(key) {
+            AudioEngine.playBeep(600, 'sine', 0.05);
+            if (key === 'C') {
+                gameState.dialedNumber = "";
+            } else if (key === '📞') {
+                if (gameState.dialedNumber === "999") {
+                    gameState.score += 15;
+                    showFeedback('📞 步驟 3 完成：撥通 999', '<b>求助中心響應：</b><br>「999求助中心已接獲您的報告，救援隊已出發！請維持電話暢通並留在安全房間。」', '📞', true, 's3_signal_action');
+                } else {
+                    gameState.dialedNumber = "";
+                    showFeedback('❌ 號碼錯誤，請重試！', '緊急求救電話應該撥打「999」！請重新輸入。', '⚠️', false);
+                }
+            } else {
+                if (gameState.dialedNumber.length < 3) {
+                    gameState.dialedNumber += key;
+                }
+            }
+            renderScene();
+        }
+
+        function renderVictory() {
+            container.innerHTML = `
+                <div class="p-8 text-center flex flex-col justify-between flex-grow">
+                    <div>
+                        <div class="text-6xl mb-3 bounce-anim">🏆</div>
+                        <h2 class="text-3xl font-black text-amber-400 mb-1">恭喜通關！</h2>
+                        <p class="text-slate-300 text-sm mb-6">你已獲得「火場求生大師」榮譽證書！</p>
+
+                        <div class="bg-gradient-to-b from-slate-700 to-slate-800 p-6 rounded-3xl border-2 border-amber-400/60 shadow-xl max-w-md mx-auto text-left space-y-3">
+                            <div class="flex justify-between items-center border-b border-slate-600 pb-2">
+                                <span class="text-xs text-slate-400">最終獲得總分：</span>
+                                <span class="text-2xl font-black text-amber-400">${gameState.score} 分</span>
+                            </div>
+                            <div class="flex justify-between items-center border-b border-slate-600 pb-2">
+                                <span class="text-xs text-slate-400">剩餘生存值：</span>
+                                <span class="text-lg font-bold text-emerald-400">${gameState.health}%</span>
+                            </div>
+
+                            <div class="pt-2">
+                                <p class="text-xs font-bold text-amber-300 mb-2">📘 防災知識總複習考點卡：</p>
+                                <ul class="text-xs text-slate-300 space-y-1.5 list-disc list-inside">
+                                    <li><b>Stay or Flee：</b>先摸門把察看濃煙，視乎情況決定逃生或留守</li>
+                                    <li><b>逃生三寶：</b>手提電話、門匙、濕毛巾</li>
+                                    <li><b>關大門：</b>隨手關門阻止火勢與濃煙蔓延</li>
+                                    <li><b>伏地爬行：</b>接近地面空氣最清新</li>
+                                    <li><b>不坐升降機：</b>防止停電受困，改走防煙樓梯</li>
+                                    <li><b>樓梯有煙：</b>切勿強衝，改用另一條樓梯或折返留守</li>
+                                    <li><b>留守四招：</b>封門縫 ➔ 退安全房 ➔ 打 999 ➔ 揮毛巾</li>
+                                </ul>
+                            </div>
+                        </div>
+                    </div>
+
+                    <button onclick="restartGame()" class="w-full mt-6 py-4 bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 text-slate-950 font-black rounded-2xl text-xl shadow-lg transition">
+                        再玩一次 ↺
+                    </button>
+                </div>
+            `;
+        }
+
+        function renderGameOver() {
+            container.innerHTML = `
+                <div class="p-8 text-center flex flex-col justify-between flex-grow">
+                    <div class="my-auto space-y-4">
+                        <div class="text-6xl">💔</div>
+                        <h2 class="text-3xl font-black text-rose-500">挑戰未完成！</h2>
+                        <p class="text-slate-300 max-w-sm mx-auto text-sm">
+                            生存值過低！火場情況瞬息萬變，複習正確知識後再試一次吧！
+                        </p>
+                    </div>
+
+                    <button onclick="restartGame()" class="w-full py-4 bg-amber-500 hover:bg-amber-600 text-slate-950 font-black rounded-2xl text-xl shadow-lg transition">
+                        重新挑戰 ↺
+                    </button>
+                </div>
+            `;
+        }
+
+        function restartGame() {
+            gameState.score = 0;
+            gameState.health = 100;
+            gameState.inventory = [];
+            gameState.dialedNumber = "";
+            gameState.currentStep = 'intro';
+            renderScene();
+        }
+
+        window.onload = function() {
+            renderScene();
+        };
+    </script>
+</body>
+</html>
